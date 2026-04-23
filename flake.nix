@@ -13,58 +13,37 @@
 
     wayle-src = {
       url = "github:wayle-rs/wayle";
-      flake = false; # it's not a flake
+      flake = false;
     };
   };
 
   outputs = { self, nixpkgs, rust-overlay, flake-utils, wayle-src, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [ (import rust-overlay) ];
-        };
+    let
+      # Helper to build wayle for any system
+      mkWayle = system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ (import rust-overlay) ];
+          };
 
-        rustToolchain =
-          pkgs.rust-bin.stable.latest.default.override {
+          rustToolchain = pkgs.rust-bin.stable.latest.default.override {
             extensions = [ "rust-src" "rustfmt" "clippy" ];
           };
 
-        rustPlatform = pkgs.makeRustPlatform {
-          cargo = rustToolchain;
-          rustc = rustToolchain;
-        };
+          rustPlatform = pkgs.makeRustPlatform {
+            cargo = rustToolchain;
+            rustc = rustToolchain;
+          };
 
-        wayleBuildInputs = with pkgs; [
-          gtk4
-          gtk4-layer-shell
-          gtksourceview5
-          gdk-pixbuf
-          pango
-          cairo
-          graphene
-          glib
-          libadwaita
-
-          libpulseaudio
-          fftw
-          pipewire
-
-          sqlite
-
-          wayland
-          wayland-protocols
-          libxkbcommon
-
-          udev
-          systemd
-        ];
-
-        wayle = rustPlatform.buildRustPackage {
+          wayleBuildInputs = with pkgs; [
+            gtk4 gtk4-layer-shell gtksourceview5 gdk-pixbuf pango cairo graphene glib libadwaita
+            libpulseaudio fftw pipewire sqlite wayland wayland-protocols libxkbcommon udev systemd
+          ];
+        in
+        rustPlatform.buildRustPackage {
           pname = "wayle";
           version = "unstable";
-
-          # 🔽 Use upstream source
           src = wayle-src;
 
           cargoLock = {
@@ -73,18 +52,13 @@
           };
 
           nativeBuildInputs = with pkgs; [
-            rustToolchain
-            pkg-config
-            cmake
-            makeWrapper
-            libclang
+            rustToolchain pkg-config cmake makeWrapper libclang
           ];
 
           buildInputs = wayleBuildInputs;
 
           LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
           BINDGEN_EXTRA_CLANG_ARGS = "-I${pkgs.glibc.dev}/include";
-
           doCheck = false;
 
           postInstall = ''
@@ -102,8 +76,7 @@
             fi
 
             for bin in $out/bin/*; do
-              wrapProgram $bin \
-                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath wayleBuildInputs}"
+              wrapProgram $bin --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath wayleBuildInputs}"
             done
           '';
 
@@ -115,28 +88,132 @@
             mainProgram = "wayle";
           };
         };
+    in
+    {
+      # NixOS module that automatically provides the package
+      nixosModules.default = { config, pkgs, lib, ... }:
+        let
+          cfg = config.programs.wayle;
+          waylePkg = self.packages.${pkgs.system}.wayle;
+        in
+        {
+          options.programs.wayle = {
+            enable = lib.mkEnableOption "Wayle - A Wayland desktop shell";
 
-      in {
-        packages.default = wayle;
-        packages.wayle = wayle;
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = waylePkg;
+              description = "The Wayle package to use.";
+            };
+
+            systemd.enable = lib.mkEnableOption "the Wayle systemd user service" // { default = true; };
+
+            extraPackages = lib.mkOption {
+              type = lib.types.listOf lib.types.package;
+              default = [ ];
+              description = "Additional packages to add to the Wayle environment";
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            environment.systemPackages = [ cfg.package ] ++ cfg.extraPackages;
+
+            systemd.user.services.wayle = lib.mkIf cfg.systemd.enable {
+              description = "Wayle Wayland Desktop Shell";
+              serviceConfig = {
+                Type = "simple";
+                ExecStart = "${lib.getExe cfg.package}";
+                Restart = "on-failure";
+                RestartSec = "5";
+                Environment = [ "PATH=${lib.makeBinPath [ cfg.package ]}" ];
+              };
+              wantedBy = [ "graphical-session.target" ];
+              partOf = [ "graphical-session.target" ];
+              after = [ "graphical-session-pre.target" ];
+            };
+
+            systemd.packages = [ cfg.package ];
+            services.dbus.packages = [ cfg.package ];
+          };
+        };
+
+      # Overlay to add wayle to nixpkgs
+      overlays.default = final: prev: {
+        wayle = self.packages.${prev.system}.wayle;
+      };
+
+      homeManagerModules.default = { config, pkgs, lib, ... }:
+        let
+          cfg = config.programs.wayle;
+          waylePkg = self.packages.${pkgs.system}.wayle;
+        in
+        {
+          options.programs.wayle = {
+            enable = lib.mkEnableOption "Wayle - A Wayland desktop shell";
+
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = waylePkg;
+              description = "The Wayle package to use.";
+            };
+
+            systemd.enable = lib.mkEnableOption "the Wayle systemd user service" // { default = true; };
+
+            extraPackages = lib.mkOption {
+              type = lib.types.listOf lib.types.package;
+              default = [ ];
+              description = "Additional packages to add to the Wayle environment";
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            home.packages = [ cfg.package ] ++ cfg.extraPackages;
+
+            systemd.user.services.wayle = lib.mkIf cfg.systemd.enable {
+              Unit.Description = "Wayle Wayland Desktop Shell";
+              Service = {
+                Type = "simple";
+                ExecStart = "${lib.getExe cfg.package}";
+                Restart = "on-failure";
+                RestartSec = "5";
+              };
+              Install.WantedBy = [ "graphical-session.target" ];
+            };
+          };
+        };
+    }
+    # Per-system outputs
+    // flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ (import rust-overlay) ];
+        };
+
+        wayle = mkWayle system;
+      in
+      {
+        packages = {
+          default = wayle;
+          wayle = wayle;
+        };
 
         apps.default = flake-utils.lib.mkApp { drv = wayle; };
 
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
-            rustToolchain
-            pkg-config
-            cmake
-            rust-analyzer
-            rustfmt
-            clippy
+            (pkgs.rust-bin.stable.latest.default.override {
+              extensions = [ "rust-src" "rustfmt" "clippy" ];
+            })
+            pkg-config cmake rust-analyzer rustfmt clippy
           ];
-
-          buildInputs = wayleBuildInputs;
-
+          buildInputs = with pkgs; [
+            gtk4 gtk4-layer-shell gtksourceview5 gdk-pixbuf pango cairo graphene glib libadwaita
+            libpulseaudio fftw pipewire sqlite wayland wayland-protocols libxkbcommon udev systemd
+          ];
           shellHook = ''
-            export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
-            echo "Wayle dev shell ($(rustc --version))"
+            export RUST_SRC_PATH="${pkgs.rust-bin.stable.latest.default.override { extensions = [ "rust-src" ]; }}/lib/rustlib/src/rust/library"
+            echo "Wayle dev shell"
           '';
         };
 
