@@ -90,8 +90,8 @@
         };
     in
     {
-      # NixOS module that automatically provides the package
-      nixosModules.default = { config, pkgs, lib, ... }:
+      # NixOS module (use nixosModules.wayle or nixosModules.default)
+      nixosModules.wayle = { config, pkgs, lib, ... }:
         let
           cfg = config.programs.wayle;
           waylePkg = self.packages.${pkgs.system}.wayle;
@@ -137,12 +137,14 @@
           };
         };
 
+      nixosModules.default = self.nixosModules.wayle;
+
       # Overlay to add wayle to nixpkgs
       overlays.default = final: prev: {
         wayle = self.packages.${prev.system}.wayle;
       };
 
-      homeManagerModules.default = { config, pkgs, lib, ... }:
+      homeManagerModules.wayle = { config, pkgs, lib, ... }:
         let
           cfg = config.programs.wayle;
           waylePkg = self.packages.${pkgs.system}.wayle;
@@ -181,6 +183,8 @@
             };
           };
         };
+
+      homeManagerModules.default = self.homeManagerModules.wayle;
     }
     # Per-system outputs
     // flake-utils.lib.eachDefaultSystem (system:
