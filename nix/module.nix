@@ -30,6 +30,8 @@ in
       message = "programs.wayle.package must be set. Use overlays to add wayle to nixpkgs, or set the package manually.";
     }];
 
+    services.upower.enable = true;
+
     environment.systemPackages = [ cfg.package ] ++ cfg.extraPackages;
 
     systemd.user.services.wayle = lib.mkIf cfg.systemd.enable {
